@@ -75,9 +75,20 @@ SITE_TITLE = os.environ.get("SITE_TITLE", "CodeSaviour")
 
 app = FastAPI(title="CodeSaviour Fix API (OpenRouter)", version="1.0")
 
+# Configure CORS via env for deployment flexibility
+_cors_env = os.environ.get("CORS_ALLOW_ORIGINS", "")
+if _cors_env:
+    _cors_list = [o.strip() for o in _cors_env.split(",") if o.strip()]
+    if "*" in _cors_list:
+        _allow_origins = ["*"]
+    else:
+        _allow_origins = _cors_list + [SITE_URL.rstrip("/")]
+else:
+    _allow_origins = ["http://127.0.0.1:8000", "http://localhost:8000", SITE_URL.rstrip("/")]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://127.0.0.1:8000", "http://localhost:8000"],
+    allow_origins=_allow_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
