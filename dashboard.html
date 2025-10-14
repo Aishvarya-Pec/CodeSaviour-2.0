@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>CodeSaviour Dashboard</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&family=Orbitron:wght@700;900&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body class="theme-dark dashboard-page">
+    <header class="site-header header-glass">
+      <div class="brand">
+        <img src="server/public/logo.png" alt="CodeSaviour logo" class="brand-mark" />
+        <span class="brand-name">CodeSaviour</span>
+        <span class="version">2.0</span>
+      </div>
+      <nav class="site-nav nav-row">
+        <a class="nav-link nav-pill" href="index.html">Home</a>
+      </nav>
+    </header>
+
+    <main class="dashboard">
+      <section class="controls">
+        <label for="language" class="control-label">Language</label>
+        <select id="language" class="select">
+          <option value="python">Python</option>
+          <option value="javascript">JavaScript</option>
+          <option value="java">Java</option>
+          <option value="csharp">C#</option>
+          <option value="cpp">C++</option>
+          <option value="c">C</option>
+          <option value="typescript">TypeScript</option>
+        </select>
+        <button id="fixBtn" class="cta-button small">Fix Code</button>
+      </section>
+
+      <section class="panes">
+        <div class="pane">
+          <div class="pane-header bug">
+            <div class="pane-title"><span class="icon">🐛</span> Your Bugged Code</div>
+            <div class="pane-actions">
+              <button id="clearBtn" class="cta-button small" title="Clear bugged code">Clear</button>
+            </div>
+          </div>
+          <textarea id="buggedCode" class="code-box" placeholder="Paste your bugged code here..."></textarea>
+        </div>
+        <div class="pane">
+          <div class="pane-header ide-header fixed">
+            <div class="ide-title"><span class="icon">✔️</span> Fixed Code <span id="fixedLang" class="ide-lang">—</span></div>
+            <div class="ide-actions">
+              <button id="copyCodeBtn" class="cta-button small">Copy</button>
+            </div>
+          </div>
+          <div class="ide-body">
+            <pre class="code-view"><code id="fixedCodeBlock"></code></pre>
+          </div>
+        </div>
+      </section>
+
+      <section class="analysis">
+        <div class="analysis-card error">
+          <div class="analysis-title">Errors</div>
+          <div id="errorCount" class="analysis-count">0</div>
+        </div>
+        <div class="analysis-card warn">
+          <div class="analysis-title">Warnings</div>
+          <div id="warningCount" class="analysis-count">0</div>
+        </div>
+      </section>
+
+      <section class="analysis-details">
+        <div class="list-column">
+          <div class="list-header">Error Details</div>
+          <ul id="errorList" class="analysis-list"></ul>
+        </div>
+        <div class="list-column">
+          <div class="list-header">Warning Details</div>
+          <ul id="warningList" class="analysis-list"></ul>
+        </div>
+      </section>
+    </main>
+
+    
+
+    <script src="script.js"></script>
+  </body>
+</html>

@@ -1,0 +1,49 @@
+name: Patch Validation
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  validate-patches:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Validate unified diffs in patches/
+        run: |
+          set -e
+          mkdir -p patch-logs
+          if [ -d patches ]; then
+            for f in patches/*.diff patches/*.patch; do
+              [ -e "$f" ] || continue
+              echo "Checking $f"
+              {
+                echo "=== $f ==="
+                git apply --3way --check "$f" 2>&1 || true
+              } | tee -a patch-logs/apply.log
+            done
+          else
+            echo "No patches directory found; skipping patch validation." | tee patch-logs/apply.log
+          fi
+
+      - name: Upload patch apply logs
+        uses: actions/upload-artifact@v4
+        with:
+          name: patch-apply-logs
+          path: patch-logs/
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r server/requirements.txt
+
+      - name: Run unit tests
+        run: |
+          pytest -q
