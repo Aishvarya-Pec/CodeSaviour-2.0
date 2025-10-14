@@ -16,6 +16,9 @@ patch-logs/
 .env
 server/.env
 
+# Vercel local metadata (do not commit)
+.vercel/
+
 # OS/editor files
 .DS_Store
 Thumbs.db
