@@ -25,5 +25,12 @@ def main():
     except Exception as e:
         print(f"POST /api/fix error: {e}")
 
+    try:
+        payload = {"language": "python", "path": "x.py", "code": buggy, "verify": False}
+        r = httpx.post(f"{BASE}/api/diff_fix", json=payload, timeout=12)
+        print(f"POST /api/diff_fix: {r.status_code} {r.text[:200]}")
+    except Exception as e:
+        print(f"POST /api/diff_fix error: {e}")
+
 if __name__ == "__main__":
     main()

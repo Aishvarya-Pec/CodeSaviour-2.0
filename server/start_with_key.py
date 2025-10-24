@@ -8,8 +8,8 @@ if ROOT_DIR not in sys.path:
     sys.path.append(ROOT_DIR)
 
 # Do not set secrets here; rely on .env or environment variables
-if not os.environ.get("OPENROUTER_API_KEY"):
-    print("[WARN] OPENROUTER_API_KEY is not set. Ensure .env or environment has the key.")
+if not os.environ.get("FIREWORKS_API_KEY"):
+    print("[WARN] FIREWORKS_API_KEY is not set. Ensure .env or environment has the key.")
 
 from server.app import app  # import after path adjustment
 

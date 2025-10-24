@@ -1,0 +1,16 @@
+{
+  "name": "codesaviour",
+  "version": "2.0.0",
+  "description": "CodeSaviour - AI-powered code analysis and fixing tool",
+  "scripts": {
+    "build": "npm run build:frontend && npm run build:worker",
+    "build:frontend": "mkdir -p dist && cp *.html *.css *.js *.png *.ico dist/ 2>nul || echo 'Copied frontend files'",
+    "build:worker": "cd server && npm install && npm run deploy",
+    "dev": "npx serve -l 8015",
+    "deploy": "npm run build && npx wrangler pages deploy dist --project-name codesaviour"
+  },
+  "devDependencies": {
+    "serve": "^14.0.0",
+    "wrangler": "^3.0.0"
+  }
+}

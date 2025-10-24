@@ -4,3 +4,8 @@ openai==1.101.0
 pyflakes==3.2.0
 httpx==0.27.0
 pytest==8.3.3
+pylint==3.2.6
+bandit==1.7.9
+mypy==1.10.0
+black==24.8.0
+ruff==0.6.9

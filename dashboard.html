@@ -1,89 +1,122 @@
 <!DOCTYPE html>
 <html lang="en">
-  <head>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>CodeSaviour Dashboard</title>
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&family=Orbitron:wght@700;900&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="styles.css" />
-  </head>
-  <body class="theme-dark dashboard-page">
-    <header class="site-header header-glass">
-      <div class="brand">
-        <img src="server/public/logo.png" alt="CodeSaviour logo" class="brand-mark" />
-        <span class="brand-name">CodeSaviour</span>
-        <span class="version">2.0</span>
-      </div>
-      <nav class="site-nav nav-row">
-        <a class="nav-link nav-pill" href="index.html">Home</a>
-      </nav>
-    </header>
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>CodeSaviour Dashboard</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&family=Orbitron:wght@700;900&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body class="theme-dark">
+  <header class="site-header header-glass">
+    <div class="brand">
+      <img src="server/public/logo.png" alt="CodeSaviour" class="brand-mark" />
+      <span class="brand-name">CodeSaviour</span>
+      <span class="version">2.0</span>
+    </div>
+    <nav class="site-nav nav-row">
+      <a class="nav-link nav-pill active" href="index.html">Home</a>
+    </nav>
+  </header>
 
-    <main class="dashboard">
-      <section class="controls">
-        <label for="language" class="control-label">Language</label>
-        <select id="language" class="select">
-          <option value="python">Python</option>
+  <main class="dashboard dashboard-page">
+    <section class="controls">
+      <div class="controls-left">
+        <div class="ide-title">AI Fix Assistant</div>
+        <div id="statusBanner" class="status-banner hidden"></div>
+      </div>
+      <div class="controls-right">
+        <label class="control-label" for="languageSelect">Language</label>
+        <select id="languageSelect" class="select">
+          <option value="python" selected>Python</option>
           <option value="javascript">JavaScript</option>
+          <option value="cpp">C/C++</option>
           <option value="java">Java</option>
           <option value="csharp">C#</option>
-          <option value="cpp">C++</option>
-          <option value="c">C</option>
-          <option value="typescript">TypeScript</option>
         </select>
-        <button id="fixBtn" class="cta-button small">Fix Code</button>
-      </section>
+      </div>
+      <div class="ide-actions">
+        <!-- Keep Clear here; move Copy Fixed into Fixed Code pane header -->
+        <button id="clearBtn" class="cta-button">Clear</button>
+      </div>
+    </section>
 
-      <section class="panes">
-        <div class="pane">
-          <div class="pane-header bug">
-            <div class="pane-title"><span class="icon">🐛</span> Your Bugged Code</div>
-            <div class="pane-actions">
-              <button id="clearBtn" class="cta-button small" title="Clear bugged code">Clear</button>
-            </div>
+    <div class="panes">
+      <div class="pane">
+        <header class="pane-header bug"><span class="icon" aria-hidden="true">🐞</span>Buggy Code</header>
+        <div class="ide-body">
+          <textarea id="inputCode" class="code-box" spellcheck="false" placeholder="Paste your buggy code here..."></textarea>
+        </div>
+        <!-- removed pane-footer deepScanBtn to place it centrally -->
+      </div>
+      <div class="pane">
+        <header class="pane-header fixed">
+          <div class="pane-title"><span class="icon" aria-hidden="true">✅</span>Fixed Code</div>
+          <div class="pane-actions">
+            <button id="copyBtn" class="cta-button">Copy Fixed</button>
           </div>
-          <textarea id="buggedCode" class="code-box" placeholder="Paste your bugged code here..."></textarea>
+        </header>
+        <div class="ide-body">
+          <textarea id="fixedCode" class="code-box" spellcheck="false" placeholder="Fixed result will appear here" readonly></textarea>
         </div>
-        <div class="pane">
-          <div class="pane-header ide-header fixed">
-            <div class="ide-title"><span class="icon">✔️</span> Fixed Code <span id="fixedLang" class="ide-lang">—</span></div>
-            <div class="ide-actions">
-              <button id="copyCodeBtn" class="cta-button small">Copy</button>
-            </div>
+        <!-- removed pane-footer fixBtn to place it centrally -->
+      </div>
+    </div>
+
+    <!-- New centered action bar outside the boxes -->
+    <section class="center-actions">
+      <button id="fixBtn" class="cta-button cta-primary">Fix Code</button>
+      <button id="deepScanBtn" class="cta-button">Run deep scan</button>
+    </section>
+
+    <section id="analysisReport" class="analysis-report">
+      <div class="analysis-cards">
+        <div class="analysis-card error-card">
+          <div class="card-icon">⛔</div>
+          <div class="card-content">
+            <div id="errorCount" class="card-number">0</div>
+            <div class="card-label">Errors</div>
           </div>
-          <div class="ide-body">
-            <pre class="code-view"><code id="fixedCodeBlock"></code></pre>
+        </div>
+        <div class="analysis-card warning-card">
+          <div class="card-icon">⚠️</div>
+          <div class="card-content">
+            <div id="warningCount" class="card-number">0</div>
+            <div class="card-label">Warnings</div>
           </div>
         </div>
-      </section>
-
-      <section class="analysis">
-        <div class="analysis-card error">
-          <div class="analysis-title">Errors</div>
-          <div id="errorCount" class="analysis-count">0</div>
+        <div class="analysis-card time-card">
+          <div class="card-icon">⏱️</div>
+          <div class="card-content">
+            <div id="timeTaken" class="card-number">0ms</div>
+            <div class="card-label">Analysis Time</div>
+          </div>
         </div>
-        <div class="analysis-card warn">
-          <div class="analysis-title">Warnings</div>
-          <div id="warningCount" class="analysis-count">0</div>
+        <div class="analysis-card time-card">
+          <div class="card-icon">🛠️</div>
+          <div class="card-content">
+            <div id="fixTimeTaken" class="card-number">0ms</div>
+            <div class="card-label">Fix Time</div>
+          </div>
         </div>
-      </section>
-
-      <section class="analysis-details">
-        <div class="list-column">
-          <div class="list-header">Error Details</div>
-          <ul id="errorList" class="analysis-list"></ul>
+      </div>
+      
+      <div class="detailed-analysis">
+        <div class="analysis-header">
+          <h3 class="analysis-title">Detailed Analysis Report</h3>
+          <button id="copyReportBtn" class="cta-button">Copy Report</button>
         </div>
-        <div class="list-column">
-          <div class="list-header">Warning Details</div>
-          <ul id="warningList" class="analysis-list"></ul>
+        <div id="analysisDetails" class="analysis-details">
+          <div class="no-analysis">
+            <p>Run code analysis to see detailed error and warning reports</p>
+          </div>
         </div>
-      </section>
-    </main>
+      </div>
+    </section>
+  </main>
 
-    
-
-    <script src="script.js"></script>
-  </body>
+  <script src="dashboard.js"></script>
+</body>
 </html>

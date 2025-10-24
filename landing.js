@@ -40,7 +40,7 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   // Subtle background video opacity pulse (more visible on load)
-  gsap.fromTo('.hero-video .bg-video', { opacity: 0.35 }, { opacity: 0.45, duration: 1.2, ease: 'power1.out' });
+  gsap.fromTo('.hero.hero-video .bg-video', { opacity: 0.35 }, { opacity: 0.45, duration: 1.2, ease: 'power1.out' });
 
   // Scroll animations for showcase section
   if (window.ScrollTrigger) {
@@ -206,3 +206,43 @@ document.addEventListener('DOMContentLoaded', () => {
     document.querySelectorAll('.reveal').forEach(el => io.observe(el));
   }
 });
+
+// Typewriter effect for hero taglines
+(function(){
+  function typeText(el, cps, delay){
+    if(!el) return;
+    if(el.dataset.typed === '1') return; // idempotent
+    const text = (el.textContent || '').trim();
+    el.textContent = '';
+    el.dataset.typed = '1';
+    el.classList.add('typing');
+    const caret = document.createElement('span');
+    caret.className = 'caret';
+    el.appendChild(caret);
+    let i = 0;
+    const speed = Math.max(10, Math.floor(1000 / (cps || 20)));
+    setTimeout(() => {
+      const timer = setInterval(() => {
+        if(i >= text.length){
+          clearInterval(timer);
+          caret.classList.add('solid');
+          return;
+        }
+        el.insertBefore(document.createTextNode(text.charAt(i)), caret);
+        i++;
+      }, speed);
+    }, delay || 0);
+  }
+
+  document.addEventListener('DOMContentLoaded', () => {
+    const tag1 = document.querySelector('.landing .hero .display-tagline');
+    // Only apply typewriter to the display-tagline, not the sub-tagline
+    typeText(tag1, 18, 400);
+
+    // Clean up any stale caret or typing class that might exist on sub-tagline
+    const subTag = document.querySelector('.landing .hero .sub-tagline');
+    const staleCaret = subTag && subTag.querySelector('.caret');
+    if (staleCaret) staleCaret.remove();
+    if (subTag) subTag.classList.remove('typing');
+  });
+})();

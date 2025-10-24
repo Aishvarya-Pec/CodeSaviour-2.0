@@ -4,6 +4,7 @@ import hashlib
 from typing import Optional, List, Tuple
 
 from fastapi import FastAPI
+from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
@@ -54,31 +55,42 @@ def _load_env_files():
 # Load .env before reading configuration
 _load_env_files()
 
-OPENROUTER_BASE_URL = os.environ.get("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
-OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY", "")
-OPENROUTER_MODEL = os.environ.get("OPENROUTER_MODEL", "tngtech/deepseek-r1t-chimera:free")
-# Ordered fallback list of models; can be overridden via OPENROUTER_MODELS env (comma-separated)
+FIREWORKS_BASE_URL = os.environ.get("FIREWORKS_BASE_URL", "https://api.fireworks.ai/inference/v1")
+FIREWORKS_API_KEY = os.environ.get("FIREWORKS_API_KEY", "")
+FIREWORKS_MODEL = os.environ.get("FIREWORKS_MODEL", "accounts/fireworks/models/qwen2p5-coder-32b-instruct")
+# Ordered fallback list of models; can be overridden via FIREWORKS_MODELS env (comma-separated)
 DEFAULT_MODELS = (
-    "tngtech/deepseek-r1t-chimera:free,"
-    "tngtech/deepseek-r1t2-chimera:free,"
-    "deepseek/deepseek-chat-v3.1:free,"
-    "mistralai/mistral-7b-instruct:free,"
-    "deepseek/deepseek-chat-v3-0324:free"
+    "accounts/fireworks/models/qwen2p5-coder-32b-instruct,"
+    "accounts/fireworks/models/llama-v3p1-70b-instruct,"
+    "accounts/fireworks/models/llama-v3p1-8b-instruct"
 )
-OPENROUTER_MODELS = [
+FIREWORKS_MODELS = [
     m.strip()
-    for m in os.environ.get("OPENROUTER_MODELS", "".join(DEFAULT_MODELS)).split(",")
+    for m in os.environ.get("FIREWORKS_MODELS", "".join(DEFAULT_MODELS)).split(",")
     if m.strip()
 ]
+# OpenRouter configuration for analysis
+OPENROUTER_BASE_URL = os.environ.get("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
+OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY", "")
+OPENROUTER_MODEL = os.environ.get("OPENROUTER_MODEL", "qwen/qwen-2.5-coder-32b-instruct:free")
 SITE_URL = os.environ.get("SITE_URL", "http://127.0.0.1:8000/")
 SITE_TITLE = os.environ.get("SITE_TITLE", "CodeSaviour")
 
-app = FastAPI(title="CodeSaviour Fix API (OpenRouter)", version="1.0")
+app = FastAPI(title="CodeSaviour Fix API (Fireworks AI)", version="1.0")
 _origins_env = os.environ.get("CORS_ALLOW_ORIGINS", "").strip()
 if _origins_env:
     _allow_origins = [o.strip() for o in _origins_env.split(",") if o.strip()]
 else:
-    _allow_origins = ["http://127.0.0.1:8000", "http://localhost:8000"]
+    _allow_origins = [
+        "http://127.0.0.1:8000",
+        "http://localhost:8000",
+        "http://127.0.0.1:8010",
+        "http://localhost:8010",
+        "http://127.0.0.1:8012",
+        "http://localhost:8012",
+        "http://127.0.0.1:8015",
+        "http://localhost:8015",
+    ]
 
 app.add_middleware(
     CORSMiddleware,
@@ -199,11 +211,12 @@ async def fix_chunk_async(client: httpx.AsyncClient, language: str, code_chunk: 
             {"role": "user", "content": prompt},
         ],
         "temperature": 0,
+        "max_tokens": 2048,
     }
     last_err = None
     for attempt in range(retries + 1):
         try:
-            r = await client.post(f"{OPENROUTER_BASE_URL}/chat/completions", json=payload, headers=headers, timeout=8.0)
+            r = await client.post(f"{FIREWORKS_BASE_URL}/chat/completions", json=payload, headers=headers, timeout=20.0)
             r.raise_for_status()
             data = r.json()
             content = (data.get("choices", [{}])[0].get("message", {}).get("content", "") or "").strip()
@@ -211,6 +224,12 @@ async def fix_chunk_async(client: httpx.AsyncClient, language: str, code_chunk: 
             if content and content.strip() != code_chunk.strip():
                 CACHE[cache_key] = content
                 return content
+        except httpx.HTTPStatusError as e:
+            # Authorization / quota issues: abort quickly and bubble up to caller
+            if getattr(e, "response", None) is not None and e.response.status_code in (401, 403, 429):
+                raise
+            last_err = e
+            await asyncio.sleep(0.3 * (attempt + 1))
         except Exception as e:
             last_err = e
             await asyncio.sleep(0.3 * (attempt + 1))
@@ -218,8 +237,10 @@ async def fix_chunk_async(client: httpx.AsyncClient, language: str, code_chunk: 
     return code_chunk
 
 
-async def fix_chunk_with_fallback_async(client: httpx.AsyncClient, language: str, code_chunk: str, models: List[str], headers: dict, retries_per_model: int = 1) -> str:
-    """Try multiple models in order until one returns a changed (non-identical) chunk."""
+async def fix_chunk_with_fallback_async(client: httpx.AsyncClient, language: str, code_chunk: str, models: List[str], headers: dict, retries_per_model: int = 1, abort_on_auth_error: bool = True) -> str:
+    """Try multiple models in order until one returns a changed (non-identical) chunk.
+    Abort immediately on authorization/quota errors to avoid long timeouts.
+    """
     cache_key = hashlib.sha256((language + "\n" + code_chunk).encode("utf-8")).hexdigest()
     if cache_key in CACHE:
         cached = CACHE[cache_key]
@@ -236,16 +257,23 @@ async def fix_chunk_with_fallback_async(client: httpx.AsyncClient, language: str
                 {"role": "user", "content": prompt},
             ],
             "temperature": 0,
+            "max_tokens": 2048,
         }
         for attempt in range(retries_per_model + 1):
             try:
-                r = await client.post(f"{OPENROUTER_BASE_URL}/chat/completions", json=payload, headers=headers, timeout=10.0)
+                r = await client.post(f"{FIREWORKS_BASE_URL}/chat/completions", json=payload, headers=headers, timeout=20.0)
                 r.raise_for_status()
                 data = r.json()
                 content = (data.get("choices", [{}])[0].get("message", {}).get("content", "") or "").strip()
                 if content and content.strip() != code_chunk.strip():
                     CACHE[cache_key] = content
                     return content
+            except httpx.HTTPStatusError as e:
+                # If authentication/quota errors occur, abort quickly so caller can surface a helpful error
+                if abort_on_auth_error and getattr(e, "response", None) is not None and e.response.status_code in (401, 403, 429):
+                    raise
+                last_err = e
+                await asyncio.sleep(0.35 * (attempt + 1))
             except Exception as e:
                 last_err = e
                 await asyncio.sleep(0.35 * (attempt + 1))
@@ -299,7 +327,22 @@ class DiffBatchRequest(BaseModel):
 @app.on_event("startup")
 def startup_event():
     global client
-    client = OpenAI(base_url=OPENROUTER_BASE_URL, api_key=OPENROUTER_API_KEY)
+    client = OpenAI(base_url=FIREWORKS_BASE_URL, api_key=FIREWORKS_API_KEY)
+
+
+@app.get("/api/status")
+def api_status():
+    key_present = bool(os.environ.get("FIREWORKS_API_KEY"))
+    return {
+        "fireworks_key_present": key_present,
+        "base_url": FIREWORKS_BASE_URL,
+        "model": FIREWORKS_MODEL,
+        "models": FIREWORKS_MODELS,
+        "site_url": SITE_URL,
+        "openrouter_key_present": bool(OPENROUTER_API_KEY),
+        "openrouter_base_url": OPENROUTER_BASE_URL,
+        "openrouter_model": OPENROUTER_MODEL,
+    }
 
 
 @app.post("/api/fix")
@@ -308,24 +351,81 @@ async def fix_code(req: FixRequest):
     code = req.code or ""
     language = req.language or ""
     chunks = split_code(code, chunk_size=1024)
+    # Prefer single-shot for moderate inputs to preserve context and avoid truncation
+    if approx_tokens(code) <= 1200:
+        chunks = [code]
     # Safety: ensure we always have at least one chunk
     if not chunks:
         chunks = [code]
     headers = {
-        "Authorization": f"Bearer {OPENROUTER_API_KEY}",
-        "HTTP-Referer": SITE_URL,
-        "X-Title": SITE_TITLE,
+        "Authorization": f"Bearer {FIREWORKS_API_KEY}",
+        "Content-Type": "application/json",
     }
+    # If API key is missing, surface a clear error instead of timing out
+    if not FIREWORKS_API_KEY:
+        return JSONResponse(status_code=401, content={
+            "fixed": code,
+            "error": {
+                "type": "missing_api_key",
+                "detail": "FIREWORKS_API_KEY is not set",
+                "hint": "Add FIREWORKS_API_KEY to .env or environment and restart the API server.",
+            }
+        })
     async with httpx.AsyncClient() as ac:
-        tasks = [fix_chunk_with_fallback_async(ac, language, ch, OPENROUTER_MODELS or [OPENROUTER_MODEL], headers, retries_per_model=1) for ch in chunks]
-        results: List[str] = await asyncio.gather(*tasks)
+        try:
+            tasks = [fix_chunk_with_fallback_async(ac, language, ch, FIREWORKS_MODELS or [FIREWORKS_MODEL], headers, retries_per_model=1) for ch in chunks]
+            results: List[str] = await asyncio.gather(*tasks)
+        except httpx.HTTPStatusError as e:
+            status = e.response.status_code if getattr(e, "response", None) is not None else 502
+            detail = ""
+            try:
+                detail = e.response.text[:200] if e.response is not None else ""
+            except Exception:
+                detail = str(e)
+            # If unauthorized, try a single-call completion via OpenAI client before returning
+            if status in (401, 403):
+                try:
+                    prompt = build_prompt(language, code, req.context)
+                    for model in (FIREWORKS_MODELS or [FIREWORKS_MODEL]):
+                        try:
+                            completion = client.chat.completions.create(
+                                model=model,
+                                messages=[{"role": "user", "content": prompt}],
+                                temperature=0,
+                                max_tokens=2048,
+                            )
+                            candidate = (completion.choices[0].message.content if completion and completion.choices else "").strip()
+                            if candidate and candidate.strip() != (code or "").strip():
+                                return {"fixed": candidate}
+                        except Exception:
+                            continue
+                except Exception:
+                    pass
+            return JSONResponse(status_code=(status if status in (401, 403, 429) else 502), content={
+                "fixed": code,
+                "error": {
+                    "type": "fireworks_http_error",
+                    "status": status,
+                    "detail": detail,
+                    "hint": "Check FIREWORKS_API_KEY and FIREWORKS_BASE_URL.",
+                }
+            })
+        except Exception as e:
+            return JSONResponse(status_code=502, content={
+                "fixed": code,
+                "error": {
+                    "type": "fireworks_request_failed",
+                    "detail": str(e)[:200],
+                    "hint": "Network error or invalid base URL.",
+                }
+            })
 
     # If nothing changed after the parallel pass, escalate retries across all models
     fixed = "\n\n".join(results).strip()
     unchanged_all = all((r or "").strip() == (chunks[i] or "").strip() for i, r in enumerate(results))
     if unchanged_all:
         async with httpx.AsyncClient() as ac:
-            tasks = [fix_chunk_with_fallback_async(ac, language, ch, OPENROUTER_MODELS or [OPENROUTER_MODEL], headers, retries_per_model=2) for ch in chunks]
+            tasks = [fix_chunk_with_fallback_async(ac, language, ch, FIREWORKS_MODELS or [FIREWORKS_MODEL], headers, retries_per_model=2) for ch in chunks]
             escalated: List[str] = await asyncio.gather(*tasks)
         if any((escalated[i] or "").strip() != (chunks[i] or "").strip() for i in range(len(chunks))):
             fixed = "\n\n".join(escalated).strip()
@@ -333,18 +433,14 @@ async def fix_code(req: FixRequest):
     if not fixed or fixed.strip() == (code or "").strip():
         # Fallback single-call if something went wrong
         prompt = build_prompt(language, code, req.context)
-        for model in (OPENROUTER_MODELS or [OPENROUTER_MODEL]):
+        for model in (FIREWORKS_MODELS or [FIREWORKS_MODEL]):
             try:
                 completion = client.chat.completions.create(
-                    extra_headers={
-                        "HTTP-Referer": SITE_URL,
-                        "X-Title": SITE_TITLE,
-                    },
-                    extra_body={},
                     model=model,
                     messages=[
                         {"role": "user", "content": prompt}
                     ],
+                    max_tokens=2048,
                 )
                 candidate = (completion.choices[0].message.content if completion and completion.choices else "").strip()
                 if candidate and candidate.strip() != code.strip():
@@ -361,7 +457,8 @@ async def fix_code(req: FixRequest):
                 fixed = heuristic if heuristic.strip() else code
             else:
                 fixed = code
-    return {"fixed": fixed}
+    fixed_fmt = apply_formatter(language, fixed) or fixed
+    return {"fixed": fixed_fmt}
 
 
 @app.post("/api/analyze")
@@ -369,139 +466,274 @@ def analyze_code(req: AnalyzeRequest):
     import json
     lang = (req.language or "").lower()
 
-    # Try OpenRouter analysis first to align with model behavior
+    def norm(items):
+        out = []
+        for it in (items or []):
+            try:
+                line = it.get("line")
+                if line is not None:
+                    line = int(line)
+                msg = str(it.get("message", ""))
+                out.append({"line": line, "message": msg})
+            except Exception:
+                pass
+        return out
+
+    # Call OpenRouter for structured analysis
+    errors = 0
+    warnings = 0
+    error_items = []
+    warning_items = []
+    llm_ok = False
     try:
         prompt = build_analysis_prompt(req.language, req.code)
-        completion = client.chat.completions.create(
-            extra_headers={
-                "HTTP-Referer": SITE_URL,
-                "X-Title": SITE_TITLE,
-            },
-            model=OPENROUTER_MODEL,
-            response_format={"type": "json_object"},
-            messages=[{"role": "user", "content": prompt}],
-        )
-        content = completion.choices[0].message.content if completion and completion.choices else "{}"
+        headers = {
+            "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+            "Content-Type": "application/json",
+            "HTTP-Referer": SITE_URL,
+            "X-Title": SITE_TITLE,
+        }
+        payload = {
+            "model": OPENROUTER_MODEL,
+            "messages": [{"role": "user", "content": prompt}],
+            "response_format": {"type": "json_object"},
+            "temperature": 0,
+        }
+        resp = httpx.post(f"{OPENROUTER_BASE_URL}/chat/completions", json=payload, headers=headers, timeout=20.0)
+        resp.raise_for_status()
+        data = resp.json()
+        content = (data.get("choices", [{}])[0].get("message", {}).get("content", "") or "").strip()
         parsed = json.loads(content or "{}")
         errors = int(parsed.get("errors", 0))
         warnings = int(parsed.get("warnings", 0))
         error_items = parsed.get("error_items", []) or []
         warning_items = parsed.get("warning_items", []) or []
-        # Normalize items
-        def norm(items):
-            out = []
-            for it in items:
-                try:
-                    line = it.get("line")
-                    if line is not None:
-                        line = int(line)
-                    msg = str(it.get("message", ""))
-                    out.append({"line": line, "message": msg})
-                except Exception:
-                    pass
-            return out
-        return {
-            "errors": errors,
-            "warnings": warnings,
-            "error_items": norm(error_items),
-            "warning_items": norm(warning_items),
-        }
+        llm_ok = True
     except Exception:
-        # Fallbacks: pyflakes for Python, simple heuristics otherwise
-        if lang == "python":
-            import tempfile
-            import os as _os
-            from subprocess import run, PIPE
+        llm_ok = False
 
-            with tempfile.NamedTemporaryFile(delete=False, suffix=".py", mode="w", encoding="utf-8") as tf:
-                tf.write(req.code)
-                path = tf.name
+    # Python: augment with local analyzers and heuristics for precision
+    if lang == "python":
+        import tempfile
+        import os as _os
+        from subprocess import run, PIPE
+
+        # pyflakes output
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".py", mode="w", encoding="utf-8") as tf:
+            tf.write(req.code)
+            path = tf.name
+        try:
+            proc = run(["pyflakes", path], stdout=PIPE, stderr=PIPE, text=True)
+            output = (proc.stdout or "") + (proc.stderr or "")
+        finally:
             try:
-                proc = run(["pyflakes", path], stdout=PIPE, stderr=PIPE, text=True)
-                output = (proc.stdout or "") + (proc.stderr or "")
-            finally:
+                _os.unlink(path)
+            except Exception:
+                pass
+
+        # quick syntax check
+        try:
+            compile(req.code, "x.py", "exec")
+        except SyntaxError as se:
+            error_items.append({"line": getattr(se, "lineno", None), "message": str(se)})
+
+        pf_error_items = []
+        pf_warning_items = []
+        for l in [l for l in output.splitlines() if l.strip()]:
+            parts = l.split(":", 3)
+            line_no = None
+            msg_text = l
+            if len(parts) >= 4:
                 try:
-                    _os.unlink(path)
+                    line_no = int(parts[1])
                 except Exception:
-                    pass
+                    line_no = None
+                msg_text = parts[3].strip()
+            msg_lower = msg_text.lower()
+            is_error = (
+                "syntaxerror" in msg_lower
+                or "invalid syntax" in msg_lower
+                or "undefined name" in msg_lower
+                or "used before assignment" in msg_lower
+                or "not defined" in msg_lower
+                or "could not compile" in msg_lower
+            )
+            if is_error:
+                pf_error_items.append({"line": line_no, "message": msg_text})
+            else:
+                pf_warning_items.append({"line": line_no, "message": msg_text})
 
-            lines = [l for l in output.splitlines() if l.strip()]
-            errors = 0
-            warnings = 0
-            error_items = []
-            warning_items = []
-            for l in lines:
-                # format: path:line:column: message
-                parts = l.split(":", 3)
-                line_no = None
-                msg_text = l
-                if len(parts) >= 4:
-                    try:
-                        line_no = int(parts[1])
-                    except Exception:
-                        line_no = None
-                    msg_text = parts[3].strip()
-                msg_lower = msg_text.lower()
-                is_error = (
-                    "syntaxerror" in msg_lower
-                    or "undefined name" in msg_lower
-                    or "not defined" in msg_lower
-                    or "could not compile" in msg_lower
-                )
-                if is_error:
-                    errors += 1
-                    error_items.append({"line": line_no, "message": msg_text})
-                else:
-                    warnings += 1
-                    warning_items.append({"line": line_no, "message": msg_text})
+        # broader analyzers
+        try:
+            diags = run_python_analyzers(req.code)
+        except Exception:
+            diags = []
+        diag_error_items = []
+        diag_warning_items = []
+        for d in diags:
+            line_no = int(d.get("line", 0)) or None
+            msg_text = str(d.get("message", ""))
+            sev = str(d.get("severity", "warning")).lower()
+            msg_lower = msg_text.lower()
+            is_error = (
+                sev == "error"
+                or "undefined name" in msg_lower
+                or "used before assignment" in msg_lower
+                or "division by zero" in msg_lower
+                or "cannot import" in msg_lower
+                or "nameerror" in msg_lower
+                or "typeerror" in msg_lower
+                or "syntaxerror" in msg_lower
+                or "invalid syntax" in msg_lower
+                or (d.get("rule", "").lower().startswith("b"))
+            )
+            if is_error:
+                diag_error_items.append({"line": line_no, "message": msg_text})
+            else:
+                diag_warning_items.append({"line": line_no, "message": msg_text})
+
+        # lightweight heuristics
+        try:
+            import re as _re
+            lines = (req.code or "").splitlines()
+            heuristic_rules = [
+                {"rx": r"\beval\s*\(", "msg": "Use of eval()", "sev": "error"},
+                {"rx": r"\bexec\s*\(", "msg": "Use of exec()", "sev": "error"},
+                {"rx": r"\bos\.system\s*\(", "msg": "Use of os.system()", "sev": "error"},
+                {"rx": r"SELECT\b.*\+", "msg": "Possible SQL injection via string concatenation", "sev": "error"},
+                {"rx": r"/\s*0(?!\.)", "msg": "Literal division by zero", "sev": "error"},
+                {"rx": r"\bprint\s*\(.*\+.*\)", "msg": "String concatenation in print may coerce types", "sev": "warning"},
+            ]
+            for i, l in enumerate(lines, start=1):
+                for r in heuristic_rules:
+                    if _re.search(r["rx"], l):
+                        item = {"line": i, "message": r["msg"]}
+                        key = (item["line"], item["message"]) 
+                        if r["sev"] == "error":
+                            if key not in {(it.get("line"), it.get("message")) for it in error_items}:
+                                error_items.append(item)
+                        else:
+                            if key not in {(it.get("line"), it.get("message")) for it in warning_items}:
+                                warning_items.append(item)
+        except Exception:
+            pass
+
+        # merge de-duplicated
+        seen = set()
+        merged_error_items = []
+        for it in (error_items or []) + pf_error_items + diag_error_items:
+            key = (it.get("line"), it.get("message"))
+            if key not in seen:
+                seen.add(key)
+                merged_error_items.append(it)
+        seen = set()
+        merged_warning_items = []
+        for it in (warning_items or []) + pf_warning_items + diag_warning_items:
+            key = (it.get("line"), it.get("message"))
+            if key not in seen:
+                seen.add(key)
+                merged_warning_items.append(it)
         return {
-            "errors": errors,
-            "warnings": warnings,
-            "error_items": error_items,
-            "warning_items": warning_items,
+            "errors": len(merged_error_items),
+            "warnings": len(merged_warning_items),
+            "error_items": norm(merged_error_items),
+            "warning_items": norm(merged_warning_items),
         }
 
-        # Simple heuristic for other languages
-        code = req.code or ""
-        lines = code.splitlines()
-        errors = 0
-        warnings = 0
-        error_items = []
-        warning_items = []
-        # bracket balance
-        for open_ch, close_ch in [("(", ")"), ("{", "}"), ("[", "]")]:
-            bal = 0
-            for idx, ch in enumerate(code):
-                if ch == open_ch:
-                    bal += 1
-                elif ch == close_ch:
-                    bal = max(0, bal - 1)
-            if bal > 0:
-                errors += bal
-                error_items.append({"line": None, "message": f"Unbalanced {open_ch}{close_ch}: missing {close_ch}"})
-        # keywords
-        import re
-        for i, l in enumerate(lines, start=1):
-            if re.search(r"\berror\b", l, flags=re.IGNORECASE):
-                errors += 1
-                error_items.append({"line": i, "message": "Contains keyword 'error'"})
-            if re.search(r"\bwarn(?:ing)?\b", l, flags=re.IGNORECASE):
-                warnings += 1
-                warning_items.append({"line": i, "message": "Contains warning keyword"})
-        # long lines and trailing spaces
-        for i, l in enumerate(lines, start=1):
-            if len(l) > 120:
-                warnings += 1
-                warning_items.append({"line": i, "message": "Line exceeds 120 characters"})
-            if re.search(r"\s+$", l):
-                warnings += 1
-                warning_items.append({"line": i, "message": "Trailing whitespace"})
+    # Merge LLM results with local analyzers and cross-language heuristics for all languages
+    base_err = norm(error_items)
+    base_warn = norm(warning_items)
+    diags = []
+    try:
+        diags = gather_diagnostics(lang, req.code or "")
+    except Exception:
+        diags = []
+    diag_err = []
+    diag_warn = []
+    for d in diags:
+        ln = int(d.get("line", 0)) or None
+        msg = str(d.get("message", ""))
+        sev = str(d.get("severity", "warning")).lower()
+        if sev == "error":
+            diag_err.append({"line": ln, "message": msg})
+        else:
+            diag_warn.append({"line": ln, "message": msg})
+    # Cross-language security, env, and concurrency heuristics
+    heur_err = []
+    heur_warn = []
+    try:
+        heur = cross_language_heuristics(lang, req.code or "")
+        for h in (heur or []):
+            ln = int(h.get("line", 0)) or None
+            msg = str(h.get("message", ""))
+            sev = str(h.get("severity", "warning")).lower()
+            if sev == "error":
+                heur_err.append({"line": ln, "message": msg})
+            else:
+                heur_warn.append({"line": ln, "message": msg})
+    except Exception:
+        pass
+    # If we have anything (from LLM, analyzers, or heuristics), return merged unique set
+    merged_err = []
+    merged_warn = []
+    seen_e = set()
+    seen_w = set()
+    for it in (base_err or []) + diag_err + heur_err:
+        key = (it.get("line"), it.get("message"))
+        if key not in seen_e:
+            seen_e.add(key)
+            merged_err.append(it)
+    for it in (base_warn or []) + diag_warn + heur_warn:
+        key = (it.get("line"), it.get("message"))
+        if key not in seen_w:
+            seen_w.add(key)
+            merged_warn.append(it)
+    if llm_ok or merged_err or merged_warn:
         return {
-            "errors": errors,
-            "warnings": warnings,
-            "error_items": error_items,
-            "warning_items": warning_items,
+            "errors": len(merged_err),
+            "warnings": len(merged_warn),
+            "error_items": merged_err,
+            "warning_items": merged_warn,
         }
+
+    # Fallback generic heuristics if nothing else produced results
+    code = req.code or ""
+    lines = code.splitlines()
+    errors = 0
+    warnings = 0
+    error_items = []
+    warning_items = []
+    for open_ch, close_ch in [("(", ")"), ("{", "}"), ("[", "]")]:
+        bal = 0
+        for ch in code:
+            if ch == open_ch:
+                bal += 1
+            elif ch == close_ch:
+                bal = max(0, bal - 1)
+        if bal > 0:
+            errors += bal
+            error_items.append({"line": None, "message": f"Unbalanced {open_ch}{close_ch}: missing {close_ch}"})
+    import re as _re2
+    for i, l in enumerate(lines, start=1):
+        if _re2.search(r"\berror\b", l, flags=_re2.IGNORECASE):
+            errors += 1
+            error_items.append({"line": i, "message": "Contains keyword 'error'"})
+        if _re2.search(r"\bwarn(?:ing)?\b", l, flags=_re2.IGNORECASE):
+            warnings += 1
+            warning_items.append({"line": i, "message": "Contains warning keyword"})
+    for i, l in enumerate(lines, start=1):
+        if len(l) > 120:
+            warnings += 1
+            warning_items.append({"line": i, "message": "Line exceeds 120 characters"})
+        if _re2.search(r"\s+$", l):
+            warnings += 1
+            warning_items.append({"line": i, "message": "Trailing whitespace"})
+    return {
+        "errors": errors,
+        "warnings": warnings,
+        "error_items": error_items,
+        "warning_items": warning_items,
+    }
 
 
 def _which(cmd: str) -> Optional[str]:
@@ -538,7 +770,7 @@ def _which(cmd: str) -> Optional[str]:
 
 def _sanitize_json(obj):
     # Remove dangerous prototype pollution keys recursively
-    dangerous = {"__proto__", "constructor", "prototype"}
+    dangerous = "__proto__", "constructor", "prototype"
     if isinstance(obj, dict):
         return {k: _sanitize_json(v) for k, v in obj.items() if k not in dangerous}
     if isinstance(obj, list):
@@ -562,6 +794,133 @@ def _redact_secrets(text: str) -> str:
     # Strip absolute Windows paths
     text = re.sub(r"[A-Za-z]:\\[^\s]+", "<REDACTED_PATH>", text)
     return text
+
+
+def cross_language_heuristics(lang: str, code: str) -> List[dict]:
+    """Lightweight multi-language heuristics for security, env, and concurrency.
+    Returns list of {line, message, severity}.
+    """
+    import re
+    lines = (code or "").splitlines()
+    L = (lang or "").lower()
+    items: List[dict] = []
+
+    def add(line, msg, sev="warning"):
+        items.append({"line": line, "message": msg, "severity": sev})
+
+    # Secrets and tokens
+    secret_patterns = [
+        r"AKIA[0-9A-Z]{16}",
+        r"(?i)(api[_-]?key|secret|token)\s*[:=]\s*['\"]?[A-Za-z0-9_\-]{16,}['\"]?",
+        r"-----BEGIN (?:RSA|EC|DSA) PRIVATE KEY-----",
+    ]
+    for i, l in enumerate(lines, 1):
+        for rx in secret_patterns:
+            if re.search(rx, l):
+                add(i, "Potential secret detected in code", "error")
+                break
+
+    # Command execution / shell
+    if L == "python":
+        for i, l in enumerate(lines, 1):
+            if re.search(r"\bos\.system\s*\(", l):
+                add(i, "Use of os.system()", "error")
+            if re.search(r"subprocess\.(Popen|call|run)\s*\(.*shell\s*=\s*True", l):
+                add(i, "subprocess with shell=True is unsafe", "error")
+    if L in {"javascript", "typescript"}:
+        for i, l in enumerate(lines, 1):
+            if re.search(r"child_process\.(exec|execSync|spawn)\s*\(", l):
+                add(i, "child_process execution can be unsafe", "error")
+            if re.search(r"\beval\s*\(", l) or re.search(r"\bnew\s+Function\s*\(", l):
+                add(i, "Use of eval/Function is unsafe", "error")
+            if re.search(r"\.innerHTML\s*=", l):
+                add(i, "Setting innerHTML can lead to XSS", "error")
+            # Simple async misuse: fetch without await inside async function (approximate)
+            if "fetch(" in l and "await" not in l:
+                add(i, "Possible missing await on fetch()", "warning")
+    if L == "java":
+        for i, l in enumerate(lines, 1):
+            if re.search(r"Runtime\.getRuntime\(\)\.exec\(", l) or re.search(r"new\s+ProcessBuilder\(", l):
+                add(i, "External process execution: validate and sanitize inputs", "error")
+            if re.search(r"Connection\s+.+=\s*DriverManager\.getConnection\(", l):
+                add(i, "Verify DB connection lifecycle and close in finally", "warning")
+    if L == "csharp":
+        for i, l in enumerate(lines, 1):
+            if re.search(r"new\s+Process(StartInfo)?\(", l) or re.search(r"ProcessStartInfo", l):
+                add(i, "ProcessStart input sanitization required", "error")
+            if re.search(r"new\s+SqlConnection\(", l):
+                add(i, "Ensure SqlConnection disposed (using/await using)", "warning")
+    if L in {"c", "cpp"}:
+        for i, l in enumerate(lines, 1):
+            if re.search(r"\bsystem\s*\(", l):
+                add(i, "Use of system() is unsafe", "error")
+            if re.search(r"\bstrcpy\s*\(|\bstrcat\s*\(|\bgets\s*\(", l):
+                add(i, "Potential buffer overflow-prone function", "error")
+        # crude thread join check
+        if "pthread_create(" in code and "pthread_join(" not in code:
+            add(None, "Thread created without join detected (pthread)", "warning")
+
+    # SQL concatenation across languages (very rough)
+    for i, l in enumerate(lines, 1):
+        if re.search(r"\b(SELECT|INSERT|UPDATE|DELETE)\b.*(\+|\%\w|\{.+\})", l, re.IGNORECASE):
+            add(i, "Possible SQL injection via dynamic query construction", "error")
+
+    # Environment and logging of secrets
+    for i, l in enumerate(lines, 1):
+        if re.search(r"process\.env\.[A-Z0-9_]+", l) and re.search(r"console\.(log|debug)", l):
+            add(i, "Leaking environment variable to logs", "warning")
+        if re.search(r"os\.getenv\(\s*['\"][A-Za-z0-9_]+['\"]\s*\)", l) and re.search(r"print\(|logging\.", l):
+            add(i, "Printing environment variable to output", "warning")
+        if re.search(r"[A-Za-z]:\\\\", l) or "/etc/" in l:
+            add(i, "Hardcoded absolute path detected", "warning")
+
+    return items
+
+
+def apply_formatter(language: str, code: str) -> Optional[str]:
+    """Optionally format the code using local formatters if available."""
+    import tempfile
+    from subprocess import run, PIPE
+    lang = (language or "").lower()
+    suffix_map = {
+        "python": ".py",
+        "javascript": ".js",
+        "typescript": ".ts",
+        "c": ".c",
+        "cpp": ".cpp",
+        "java": ".java",
+        "csharp": ".cs",
+    }
+    suffix = suffix_map.get(lang, ".txt")
+    with tempfile.NamedTemporaryFile(delete=False, suffix=suffix, mode="w", encoding="utf-8") as tf:
+        tf.write(code or "")
+        path = tf.name
+    try:
+        if lang == "python":
+            black = _which("black")
+            if black:
+                run([black, path, "--quiet"], stdout=PIPE, stderr=PIPE, text=True)
+        elif lang in {"javascript", "typescript"}:
+            prettier = _which("prettier")
+            if prettier:
+                run([prettier, "--write", path], stdout=PIPE, stderr=PIPE, text=True)
+        elif lang in {"c", "cpp"}:
+            clangfmt = _which("clang-format")
+            if clangfmt:
+                out = run([clangfmt, path], stdout=PIPE, stderr=PIPE, text=True)
+                if out.stdout:
+                    return out.stdout
+        # Read back file for formatters that rewrite in place
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                return f.read()
+        except Exception:
+            return None
+    finally:
+        try:
+            os.unlink(path)
+        except Exception:
+            pass
 
 
 def run_python_analyzers(code: str) -> List[dict]:
@@ -812,20 +1171,25 @@ def apply_unified_diff(original: str, diff_text: str) -> Optional[str]:
 
 @app.post("/api/diff_fix")
 async def diff_fix(req: DiffFixRequest):
-    """Run local analyzers, then ask OpenRouter to return a unified diff patch for the file."""
+    """Run local analyzers, then ask Fireworks AI to return a unified diff patch for the file."""
     lang = req.language
     path = req.path or "unknown/file"
     source = req.code or ""
     diags = gather_diagnostics(lang, source, path)
     prompt = build_diff_prompt(lang, path, diags, source)
+    # Precompute summary to return even if remote call fails
+    before_errors = sum(1 for d in diags if str(d.get("severity", "warning")) == "error")
+    before_warnings = sum(1 for d in diags if str(d.get("severity", "warning")) != "error")
+    rules = {}
+    for d in diags:
+        rules[d.get("rule", "")] = rules.get(d.get("rule", ""), 0) + 1
 
     headers = {
-        "Authorization": f"Bearer {OPENROUTER_API_KEY}",
-        "HTTP-Referer": SITE_URL,
-        "X-Title": SITE_TITLE,
+        "Authorization": f"Bearer {FIREWORKS_API_KEY}",
+        "Content-Type": "application/json",
     }
     payload = {
-        "model": "openrouter/auto",
+        "model": FIREWORKS_MODEL,
         "messages": [
             {"role": "system", "content": "You output only unified diffs."},
             {"role": "user", "content": prompt},
@@ -834,9 +1198,49 @@ async def diff_fix(req: DiffFixRequest):
         "max_tokens": 1200,
     }
     async with httpx.AsyncClient() as ac:
-        r = await ac.post(f"{OPENROUTER_BASE_URL}/chat/completions", json=payload, headers=headers, timeout=30.0)
-        r.raise_for_status()
-        data = r.json()
+        try:
+            r = await ac.post(f"{FIREWORKS_BASE_URL}/chat/completions", json=payload, headers=headers, timeout=30.0)
+            r.raise_for_status()
+            data = r.json()
+        except httpx.HTTPStatusError as e:
+            status = e.response.status_code if getattr(e, "response", None) is not None else 502
+            detail = ""
+            try:
+                detail = e.response.text[:200] if e.response is not None else ""
+            except Exception:
+                detail = str(e)
+            return JSONResponse(status_code=(status if status in (401, 403, 429) else 502), content={
+                "diff": "",
+                "summary": {
+                    "file": path,
+                    "before_errors": before_errors,
+                    "before_warnings": before_warnings,
+                    "rules": rules,
+                },
+                "verification": {"applied": False, "after_errors": None, "after_warnings": None},
+                "error": {
+                    "type": "fireworks_http_error",
+                    "status": status,
+                    "detail": detail,
+                    "hint": "Set a valid FIREWORKS_API_KEY and check FIREWORKS_BASE_URL.",
+                },
+            })
+        except Exception as e:
+            return JSONResponse(status_code=502, content={
+                "diff": "",
+                "summary": {
+                    "file": path,
+                    "before_errors": before_errors,
+                    "before_warnings": before_warnings,
+                    "rules": rules,
+                },
+                "verification": {"applied": False, "after_errors": None, "after_warnings": None},
+                "error": {
+                    "type": "fireworks_request_failed",
+                    "detail": str(e)[:200],
+                    "hint": "Network error or invalid base URL.",
+                },
+            })
     diff = (data.get("choices", [{}])[0].get("message", {}).get("content", "") or "").strip()
 
     # Build summary
@@ -876,9 +1280,8 @@ async def diff_fix(req: DiffFixRequest):
 async def diff_batch(req: DiffBatchRequest):
     results = []
     headers = {
-        "Authorization": f"Bearer {OPENROUTER_API_KEY}",
-        "HTTP-Referer": SITE_URL,
-        "X-Title": SITE_TITLE,
+        "Authorization": f"Bearer {FIREWORKS_API_KEY}",
+        "Content-Type": "application/json",
     }
     async with httpx.AsyncClient() as ac:
         tasks = []
@@ -889,7 +1292,7 @@ async def diff_batch(req: DiffBatchRequest):
             diags = gather_diagnostics(lang, src, path)
             prompt = build_diff_prompt(lang, path, diags, src)
             payload = {
-                "model": "openrouter/auto",
+                "model": FIREWORKS_MODEL,
                 "messages": [
                     {"role": "system", "content": "You output only unified diffs."},
                     {"role": "user", "content": prompt},
@@ -897,7 +1300,7 @@ async def diff_batch(req: DiffBatchRequest):
                 "temperature": 0.1,
                 "max_tokens": 1200,
             }
-            tasks.append(ac.post(f"{OPENROUTER_BASE_URL}/chat/completions", json=payload, headers=headers, timeout=30.0))
+            tasks.append(ac.post(f"{FIREWORKS_BASE_URL}/chat/completions", json=payload, headers=headers, timeout=30.0))
         responses = await asyncio.gather(*tasks)
         for idx, r in enumerate(responses):
             try:

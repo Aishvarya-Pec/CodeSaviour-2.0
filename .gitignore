@@ -31,3 +31,9 @@ build/
 # Virtual environments
 .venv/
 venv/
+
+# Cloudflare Wrangler
+.wrangler/
+
+# Temporary working files
+temp/
